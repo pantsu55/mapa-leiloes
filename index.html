@@ -226,7 +226,7 @@ function coordOf(i){
 const isExact = i => levelOf(i)==='exato';
 
 /* ---------- entorno (OpenStreetMap / Overpass) ---------- */
-const cacheEnv = store.get('gc_env',{});
+const cacheEnv = store.get('gc_env2',{});
 const OVERPASS = 'https://overpass-api.de/api/interpreter';
 async function overpass(pos){
   const [a,b]=pos, c=(r)=>`(around:${r},${a},${b})`;
@@ -237,14 +237,18 @@ nwr${c(800)}[shop~"^(supermarket|convenience|bakery|greengrocer)$"];out count;
 nwr${c(1000)}[amenity~"^(pharmacy|hospital|clinic|doctors)$"];out count;
 nwr${c(1000)}[amenity~"^(school|kindergarten|college|university)$"];out count;
 nwr${c(1000)}[leisure~"^(park|playground|garden)$"];out count;
-nwr${c(600)}[amenity~"^(restaurant|cafe|bank|marketplace)$"];out count;`;
+nwr${c(600)}[amenity~"^(restaurant|cafe|bank|marketplace)$"];out count;
+(nwr${c(800)}[informal=yes];nwr${c(800)}[residential=favela];nwr${c(800)}[place~"^(neighbourhood|suburb|quarter|hamlet|locality)$"][name~"[Ff]avela|[Cc]omunidade|[Oo]cupa[cç][ãa]o"];nwr${c(800)}[landuse=residential][name~"[Ff]avela|[Cc]omunidade|[Oo]cupa[cç][ãa]o"];)->.f;.f out count;
+nwr${c(500)}[landuse~"^(industrial|landfill)$"];out count;
+nwr${c(150)}[railway=rail];out count;
+nwr${c(150)}[highway~"^(motorway|trunk)$"];out count;`;
   try{
     const r = await fetch(OVERPASS,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(q)});
     if(!r.ok) return null;
     const j = await r.json();
     const n = j.elements.filter(e=>e.type==='count').map(e=>parseInt(e.tags.total,10));
-    if(n.length!==7) return null;
-    return {rail:n[0],bus:n[1],mkt:n[2],saude:n[3],escola:n[4],lazer:n[5],com:n[6]};
+    if(n.length!==11) return null;
+    return {rail:n[0],bus:n[1],mkt:n[2],saude:n[3],escola:n[4],lazer:n[5],com:n[6],fav:n[7],ind:n[8],fer:n[9],rod:n[10]};
   }catch(e){ return null; }
 }
 const sat=(n,k)=>Math.min(n/k,1);
@@ -256,6 +260,15 @@ function envHtml(i){
   const s=envScore(r);
   return `<b style="color:${scoreColor(s)}">${s}/100</b><div class="sub">estação ${r.rail} · ônibus ${r.bus} · mercados ${r.mkt} · saúde ${r.saude} · escolas ${r.escola} · parques ${r.lazer} · comércio ${r.com}</div>`;
 }
+function atencaoHtml(i){
+  const r=envOf(i); if(!r) return '<span class="sub">avalie o entorno</span>';
+  const f=[];
+  f.push(r.fav>0 ? '<b style="color:#b3261e">possível favela/ocupação mapeada a até 800 m</b>' : 'nenhuma favela mapeada a 800 m');
+  if(r.ind>0) f.push('área industrial ou aterro a até 500 m');
+  if(r.fer>0) f.push('linha de trem a até 150 m (ruído)');
+  if(r.rod>0) f.push('rodovia ou via expressa a até 150 m (ruído)');
+  return f.join('<br>') + '<div class="sub">Dados do OpenStreetMap: dependem de alguém ter mapeado, então a ausência não garante nada.</div>';
+}
 async function evalEnv(id){
   const i=items.find(x=>x.id===id); $('status').textContent='Avaliando o entorno…';
   let pos=cacheQ[addrQuery(i,true)];
@@ -264,7 +277,7 @@ async function evalEnv(id){
   if(!(key in cacheEnv)){
     const r=await overpass(pos);
     if(!r){ $('status').textContent='Serviço de mapas (OpenStreetMap) indisponível agora. Tente de novo.'; return; }
-    cacheEnv[key]=r; store.set('gc_env',cacheEnv);
+    cacheEnv[key]=r; store.set('gc_env2',cacheEnv);
   }
   $('status').textContent='Entorno avaliado.';
   const m=markers[id]; if(m) m.setPopupContent(popupHtml(i));
@@ -296,7 +309,7 @@ function popupHtml(i){
    <tr><td>Financiamento</td><td>${i.fin?'Sim':'Não'}</td></tr>
    <tr><td>Score</td><td><b style="color:${scoreColor(i.score)}">${i.score}/100</b> <span class="sub">(preliminar)</span></td></tr>
    <tr><td>Entorno</td><td>${envHtml(i)}</td></tr>
-   <tr><td>Segurança</td><td><span class="sub">sem dados ainda</span></td></tr>
+   <tr><td>Atenção</td><td>${atencaoHtml(i)}</td></tr>
   </table>
   <div class="note">Score por regras: desconto, R$/m² vs. cidade, modalidade, financiamento e tipo. Ocupação, dívidas e matrícula ainda <b>não</b> entram — leia o edital.</div>
   <div class="note">${{exato:'📍 Posição pelo endereço.',bairro:'⚠ Posição aproximada (dentro do bairro). Toque em Localizar endereço.',cidade:'⚠ Posição aproximada (centro da cidade). Use Refinar posição.'}[levelOf(i)]||''}</div>
