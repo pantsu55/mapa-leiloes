@@ -225,6 +225,57 @@ function coordOf(i){
 }
 const isExact = i => levelOf(i)==='exato';
 
+/* ---------- entorno (OpenStreetMap / Overpass) ---------- */
+const cacheEnv = store.get('gc_env',{});
+const OVERPASS = 'https://overpass-api.de/api/interpreter';
+async function overpass(pos){
+  const [a,b]=pos, c=(r)=>`(around:${r},${a},${b})`;
+  const q = `[out:json][timeout:25];
+(nwr${c(800)}[railway~"^(station|halt)$"];nwr${c(800)}[station=subway];)->.r;.r out count;
+nwr${c(400)}[highway=bus_stop];out count;
+nwr${c(800)}[shop~"^(supermarket|convenience|bakery|greengrocer)$"];out count;
+nwr${c(1000)}[amenity~"^(pharmacy|hospital|clinic|doctors)$"];out count;
+nwr${c(1000)}[amenity~"^(school|kindergarten|college|university)$"];out count;
+nwr${c(1000)}[leisure~"^(park|playground|garden)$"];out count;
+nwr${c(600)}[amenity~"^(restaurant|cafe|bank|marketplace)$"];out count;`;
+  try{
+    const r = await fetch(OVERPASS,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(q)});
+    if(!r.ok) return null;
+    const j = await r.json();
+    const n = j.elements.filter(e=>e.type==='count').map(e=>parseInt(e.tags.total,10));
+    if(n.length!==7) return null;
+    return {rail:n[0],bus:n[1],mkt:n[2],saude:n[3],escola:n[4],lazer:n[5],com:n[6]};
+  }catch(e){ return null; }
+}
+const sat=(n,k)=>Math.min(n/k,1);
+const envScore = r => Math.round(25*sat(r.rail,1)+10*sat(r.bus,3)+20*sat(r.mkt,2)+15*sat(r.saude,2)+10*sat(r.escola,2)+10*sat(r.lazer,1)+10*sat(r.com,5));
+const posKey = pos => pos[0].toFixed(4)+','+pos[1].toFixed(4);
+function envOf(i){ const pos=cacheQ[addrQuery(i,true)]; return pos ? cacheEnv[posKey(pos)] : null; }
+function envHtml(i){
+  const r=envOf(i); if(!r) return '<span class="sub">não avaliado</span>';
+  const s=envScore(r);
+  return `<b style="color:${scoreColor(s)}">${s}/100</b><div class="sub">estação ${r.rail} · ônibus ${r.bus} · mercados ${r.mkt} · saúde ${r.saude} · escolas ${r.escola} · parques ${r.lazer} · comércio ${r.com}</div>`;
+}
+async function evalEnv(id){
+  const i=items.find(x=>x.id===id); $('status').textContent='Avaliando o entorno…';
+  let pos=cacheQ[addrQuery(i,true)];
+  if(!pos){ pos=await geocodeExact(i); if(pos===undefined){ $('status').textContent='Serviço de localização indisponível agora.'; return; } if(!pos){ $('status').textContent='Sem endereço exato: não dá para avaliar o entorno desse imóvel.'; return; } }
+  const key=posKey(pos);
+  if(!(key in cacheEnv)){
+    const r=await overpass(pos);
+    if(!r){ $('status').textContent='Serviço de mapas (OpenStreetMap) indisponível agora. Tente de novo.'; return; }
+    cacheEnv[key]=r; store.set('gc_env',cacheEnv);
+  }
+  $('status').textContent='Entorno avaliado.';
+  const m=markers[id]; if(m) m.setPopupContent(popupHtml(i));
+}
+function mapsUrl(i,kind){
+  const pos=cacheQ[addrQuery(i,true)];
+  if(pos && kind==='pano') return `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${pos[0]},${pos[1]}`;
+  const q = pos ? `${pos[0]},${pos[1]}` : addrQuery(i,true);
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+}
+
 /* ---------- mapa ---------- */
 const map = L.map('map',{zoomControl:true}).setView([-26.5,-50.5],6);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; OpenStreetMap'}).addTo(map);
@@ -244,10 +295,14 @@ function popupHtml(i){
    <tr><td>Modalidade</td><td>${esc(i.mod)}</td></tr>
    <tr><td>Financiamento</td><td>${i.fin?'Sim':'Não'}</td></tr>
    <tr><td>Score</td><td><b style="color:${scoreColor(i.score)}">${i.score}/100</b> <span class="sub">(preliminar)</span></td></tr>
+   <tr><td>Entorno</td><td>${envHtml(i)}</td></tr>
+   <tr><td>Segurança</td><td><span class="sub">sem dados ainda</span></td></tr>
   </table>
   <div class="note">Score por regras: desconto, R$/m² vs. cidade, modalidade, financiamento e tipo. Ocupação, dívidas e matrícula ainda <b>não</b> entram — leia o edital.</div>
   <div class="note">${{exato:'📍 Posição pelo endereço.',bairro:'⚠ Posição aproximada (dentro do bairro). Toque em Localizar endereço.',cidade:'⚠ Posição aproximada (centro da cidade). Use Refinar posição.'}[levelOf(i)]||''}</div>
   <div class="row"><a class="btn" href="${esc(i.link)}" target="_blank" rel="noopener">Abrir na Caixa</a>
+  <a class="btn" style="background:#2f7d4f" href="${mapsUrl(i,'pano')}" target="_blank" rel="noopener">${exato?'Street View':'Ver no Google Maps'}</a>
+  <button onclick="evalEnv('${i.id}')">🏙 Avaliar entorno</button>
   ${exato?'':`<button onclick="refineOne('${i.id}')">📍 Localizar endereço</button>`}
   <button onclick="toggleFav('${i.id}')">${favs.has(i.id)?'★ Favorito':'☆ Favoritar'}</button></div></div>`;
 }
