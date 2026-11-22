@@ -60,7 +60,8 @@ button:disabled{opacity:.5;cursor:default}
   <aside id="side">
     <header>
       <h1>Leilões Caixa — mapa</h1>
-      <div class="sub">Dados da Caixa gerados em  · 5.561 imóveis · SP, PR, SC, RS</div>
+      <div class="sub">Dados da Caixa de  · 5.561 imóveis · SP, PR, SC, RS</div>
+      <div class="sub">Dica: filtre uma cidade e toque em “Refinar posição” para ver cada imóvel no seu bairro/endereço.</div>
     </header>
     <div id="filters">
       <label>Estado<select id="fUF"><option value="">Todos</option></select></label>
@@ -151,7 +152,8 @@ function filtered(){
 /* ---------- geocodificação (roda no seu navegador, com cache) ---------- */
 const NOM = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=br&accept-language=pt-BR&q=';
 const cacheCity = store.get('gc_city',{});
-const cacheAddr = store.get('gc_addr',{});
+const cacheBairro = store.get('gc_bairro',{});
+const cacheQ = store.get('gc_q2',{});
 const UFN = {SP:'São Paulo',PR:'Paraná',SC:'Santa Catarina',RS:'Rio Grande do Sul'};
 let lastReq = 0;
 async function nominatim(q){
@@ -189,16 +191,39 @@ function addrQuery(i, withBairro){
   const num = m && !/^sn$/i.test(m[2]) ? m[2] : '';
   return [`${title(street)}${num?' '+num:''}`, withBairro?title(i.bairro):null, title(i.cidade), UFN[i.uf], 'Brasil'].filter(Boolean).join(', ');
 }
+const bairroKey = i => i.uf+'|'+i.cidade+'|'+i.bairro;
 async function geocodeExact(i){
-  if(cacheAddr[i.id]!==undefined) return cacheAddr[i.id];
-  let pos = await nominatim(addrQuery(i,true));
+  const k = addrQuery(i,true);
+  if(k in cacheQ) return cacheQ[k];
+  let pos = await nominatim(k);
   if(pos===null) pos = await nominatim(addrQuery(i,false));
   if(pos===undefined) return undefined;
-  cacheAddr[i.id] = pos; store.set('gc_addr',cacheAddr);
+  cacheQ[k] = pos; store.set('gc_q2',cacheQ);
   return pos;
 }
-const coordOf = i => (cacheAddr[i.id] || cacheCity[cityKey(i)] || null);
-const isExact = i => !!cacheAddr[i.id];
+async function geocodeBairro(i){
+  const k = bairroKey(i);
+  if(k in cacheBairro) return cacheBairro[k];
+  const pos = await nominatim(`${title(i.bairro)}, ${title(i.cidade)}, ${UFN[i.uf]}, Brasil`);
+  if(pos===undefined) return undefined;
+  cacheBairro[k] = pos; store.set('gc_bairro',cacheBairro);
+  return pos;
+}
+const jit = (id,s) => { let h=0; for(const c of id) h=(h*31+c.charCodeAt(0))>>>0; return [((h%1000)/1000-.5)*s, (((h>>>10)%1000)/1000-.5)*s]; };
+function levelOf(i){
+  if(cacheQ[addrQuery(i,true)]) return 'exato';
+  if(cacheBairro[bairroKey(i)]) return 'bairro';
+  if(cacheCity[cityKey(i)]) return 'cidade';
+  return null;
+}
+function coordOf(i){
+  const l = levelOf(i); if(!l) return null;
+  if(l==='exato') return cacheQ[addrQuery(i,true)];
+  const base = l==='bairro' ? cacheBairro[bairroKey(i)] : cacheCity[cityKey(i)];
+  const [a,b] = jit(i.id, l==='bairro' ? 0.006 : 0.03);
+  return [base[0]+a, base[1]+b];
+}
+const isExact = i => levelOf(i)==='exato';
 
 /* ---------- mapa ---------- */
 const map = L.map('map',{zoomControl:true}).setView([-26.5,-50.5],6);
@@ -221,13 +246,14 @@ function popupHtml(i){
    <tr><td>Score</td><td><b style="color:${scoreColor(i.score)}">${i.score}/100</b> <span class="sub">(preliminar)</span></td></tr>
   </table>
   <div class="note">Score por regras: desconto, R$/m² vs. cidade, modalidade, financiamento e tipo. Ocupação, dívidas e matrícula ainda <b>não</b> entram — leia o edital.</div>
-  <div class="note">${exato?'📍 Posição pelo endereço.':'⚠ Posição aproximada (centro da cidade).'}</div>
+  <div class="note">${{exato:'📍 Posição pelo endereço.',bairro:'⚠ Posição aproximada (dentro do bairro). Toque em Localizar endereço.',cidade:'⚠ Posição aproximada (centro da cidade). Use Refinar posição.'}[levelOf(i)]||''}</div>
   <div class="row"><a class="btn" href="${esc(i.link)}" target="_blank" rel="noopener">Abrir na Caixa</a>
   ${exato?'':`<button onclick="refineOne('${i.id}')">📍 Localizar endereço</button>`}
   <button onclick="toggleFav('${i.id}')">${favs.has(i.id)?'★ Favorito':'☆ Favoritar'}</button></div></div>`;
 }
 function makeMarker(i,pos){
-  const m = L.circleMarker(pos,{radius:isExact(i)?9:7,color:'#fff',weight:1.5,fillColor:scoreHex(i.score),fillOpacity:.92});
+  const ex = isExact(i);
+  const m = L.circleMarker(pos,{radius:ex?9:7,color:ex?'#fff':'#333',weight:ex?1.5:1,dashArray:ex?null:'2 2',fillColor:scoreHex(i.score),fillOpacity:ex?.95:.55});
   m.bindPopup(()=>popupHtml(i));
   m.on('click',()=>highlight(i.id));
   return m;
@@ -241,10 +267,12 @@ function render(){
   f.forEach(i=>{ const pos=coordOf(i); if(!pos){semPos++;return;} const m=makeMarker(i,pos); markers[i.id]=m; batch.push(m); });
   cluster.addLayers(batch);
   $('count').textContent = `${f.length.toLocaleString('pt-BR')} imóveis${semPos?` · ${semPos} aguardando localização`:''}`;
+  if(!refining){ const e=estimate(f); const mins=Math.ceil((e.b+e.a)*1.2/60); $('btnRefine').textContent = mins>0 ? `📍 Refinar posição (~${mins} min)` : '📍 Refinar posição'; }
   const lst = $('list');
   lst.innerHTML = f.slice(0,150).map(i=>`<div class="it" data-id="${i.id}">
     <div class="sc" style="background:${scoreColor(i.score)}">${i.score}</div>
-    <div><div class="t">${favs.has(i.id)?'★ ':''}${esc(title(i.tipo))} — ${esc(title(i.bairro))}</div>
+    <div><div class="t">${favs.has(i.id)?'★ ':''}${isExact(i)?'📍 ':''}${esc(title(i.tipo))} — ${esc(title(i.bairro))}</div>
+    <div class="m">${esc(title(i.end))}</div>
     <div class="m">${esc(title(i.cidade))}/${i.uf} · ${i.area?i.area.toFixed(0)+' m² · ':''}${esc(i.mod)}</div>
     <div class="p"><b>${brl(i.preco)}</b> ${i.desc>0?`<s>${brl(i.aval)}</s><span class="badge">-${i.desc.toFixed(0)}%</span>`:''}</div></div></div>`).join('')
     + (f.length>150?`<div class="it" style="color:var(--mut)">Mostrando os 150 primeiros. Use os filtros para refinar.</div>`:'');
@@ -261,24 +289,38 @@ async function refineOne(id){
   const i=items.find(x=>x.id===id); $('status').textContent='Localizando endereço…';
   const pos=await geocodeExact(i);
   if(pos===undefined){ $('status').textContent='Serviço de localização indisponível agora.'; return; }
-  if(pos===null){ cacheAddr[id]=undefined; $('status').textContent='Endereço não encontrado; fica no centro da cidade.'; return; }
+  if(pos===null){ $('status').textContent='Endereço não encontrado; fica aproximado.'; return; }
   $('status').textContent='Endereço localizado.'; map.closePopup(); render();
   setTimeout(()=>{ const m=markers[id]; if(m) cluster.zoomToShowLayer(m,()=>m.openPopup()); },300);
 }
 let refining=false;
+function estimate(f){
+  const bs=new Set(), as=new Set();
+  f.forEach(i=>{ if(!(bairroKey(i) in cacheBairro)) bs.add(bairroKey(i)); const k=addrQuery(i,true); if(!(k in cacheQ)) as.add(k); });
+  return {b:bs.size,a:as.size};
+}
 $('btnRefine').addEventListener('click',async()=>{
   if(refining){ refining=false; return; }
-  const f=filtered().filter(i=>!isExact(i)&&cacheAddr[i.id]===undefined).slice(0,150);
-  if(!f.length){ $('status').textContent='Nada novo para refinar nesse filtro.'; return; }
-  refining=true; $('btnRefine').textContent='⏹ Parar'; let n=0;
-  for(const i of f){
-    if(!refining) break;
-    const pos=await geocodeExact(i);
-    if(pos===undefined){ $('status').textContent='Serviço de localização indisponível agora.'; break; }
-    if(pos===null) cacheAddr[i.id]=undefined;
-    n++; $('status').textContent=`Refinando posições: ${n}/${f.length}`; scheduleRender();
-  }
-  refining=false; $('btnRefine').textContent='📍 Refinar posição'; $('status').textContent=`Refinamento concluído (${n}).`; render();
+  const f=filtered();
+  if(f.length>1500){ $('status').textContent='São imóveis demais para refinar de uma vez. Filtre antes (ex.: digite uma cidade).'; return; }
+  refining=true; $('btnRefine').textContent='⏹ Parar';
+  const seenB=new Set(), bs=[]; f.forEach(i=>{ const k=bairroKey(i); if(!(k in cacheBairro)&&!seenB.has(k)){seenB.add(k);bs.push(i);} });
+  const seenA=new Set(), as=[]; f.forEach(i=>{ const k=addrQuery(i,true); if(!(k in cacheQ)&&!seenA.has(k)){seenA.add(k);as.push(i);} });
+  let down=false;
+  const run=async(arr,fn,label)=>{
+    let n=0;
+    for(const i of arr){
+      if(!refining||down) break;
+      const p=await fn(i);
+      if(p===undefined){ down=true; $('status').textContent='Serviço de localização indisponível agora. Tente de novo em instantes.'; break; }
+      n++; $('status').textContent=`${label}: ${n}/${arr.length}`; scheduleRender();
+    }
+  };
+  await run(bs,geocodeBairro,'Localizando bairros');
+  await run(as,geocodeExact,'Localizando endereços');
+  const parou=!refining; refining=false;
+  if(!down) $('status').textContent = parou ? 'Refinamento interrompido (o que já foi localizado ficou salvo).' : 'Refinamento concluído.';
+  render();
 });
 ['fUF','fCidade','fTipo','fMod','fPreco','fDesc','fScore','fSort','fFin','fFav'].forEach(id=>$(id).addEventListener('input',()=>{ render(); }));
 render();
