@@ -45,6 +45,9 @@ button:disabled{opacity:.5;cursor:default}
 .pop .row{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .pop a.btn{display:inline-block;padding:6px 10px;border-radius:8px;background:var(--acc);color:#fff;text-decoration:none;font-size:13px}
 .note{font-size:11px;color:var(--mut);margin-top:6px}
+.pop a.btn2{display:inline-block;padding:4px 8px;border-radius:8px;border:1px solid var(--line);color:var(--acc);text-decoration:none;font-size:12px;background:#fff}
+.pop details.sv{margin-top:8px}
+.pop details.sv summary{cursor:pointer;font-weight:600;color:var(--acc)}
 #toggle{display:none}
 @media (max-width:820px){
   #app{flex-direction:column-reverse}
@@ -318,6 +321,33 @@ async function evalEnv(id){
   $('status').textContent='Entorno avaliado.';
   const m=markers[id]; if(m) m.setPopupContent(popupHtml(i));
 }
+/* ---------- Street View embutido e pesquisas sobre o bairro ---------- */
+const GMAPS_KEY = '';   // opcional: chave da Google Maps Embed API (gratuita). Vazia = usa o embed sem chave do Google Maps.
+function svSrc(pos){
+  return GMAPS_KEY
+    ? `https://www.google.com/maps/embed/v1/streetview?key=${encodeURIComponent(GMAPS_KEY)}&location=${pos[0]},${pos[1]}&fov=90`
+    : `https://www.google.com/maps?q=&layer=c&cbll=${pos[0]},${pos[1]}&cbp=11,0,0,0,0&output=svembed`;
+}
+function svLoad(el){   // só carrega o iframe quando a pessoa abre (evita pesar o popup)
+  if(!el.open || el.dataset.done) return;
+  el.dataset.done = '1';
+  el.insertAdjacentHTML('beforeend',`<iframe src="${esc(el.dataset.src)}" loading="lazy" allowfullscreen referrerpolicy="no-referrer-when-downgrade" style="width:100%;height:240px;border:0;border-radius:8px;margin-top:6px"></iframe>`);
+}
+function extrasHtml(i){
+  const l = levelOf(i), pos = (l==='exato'||l==='rua') ? cacheQ[addrQuery(i,true)] : null;
+  const g = q => 'https://www.google.com/search?q='+encodeURIComponent(q);
+  const lugar = `${title(i.bairro)} ${title(i.cidade)} ${i.uf}`;
+  const lk = (t,u) => `<a class="btn2" href="${esc(u)}" target="_blank" rel="noopener">${t}</a>`;
+  const sv = pos
+    ? `<details class="sv" data-src="${esc(svSrc(pos))}" ontoggle="svLoad(this)"><summary>🛣 Ver a rua em 360° (Street View)</summary>${l==='rua'?'<div class="note">Posição pela rua: a imagem pode mostrar outro trecho.</div>':''}</details>`
+    : `<div class="note">Street View embutido só aparece depois de localizar a rua ou o endereço.</div>`;
+  return sv + `<div class="note" style="margin-top:8px">Pesquisar sobre ${esc(title(i.bairro))}:</div><div class="row">`
+    + lk('🛡 Segurança', g(`segurança bairro ${lugar}`))
+    + lk('💬 Opiniões de moradores', g(`morar no bairro ${lugar} opinião moradores`))
+    + lk('⭐ Locais no Maps', `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(lugar)}`)
+    + lk('💰 Preço do m²', g(`preço médio m² bairro ${lugar}`))
+    + `</div>`;
+}
 function mapsUrl(i,kind){
   const pos=cacheQ[addrQuery(i,true)];
   if(pos && kind==='pano') return `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${pos[0]},${pos[1]}`;
@@ -349,6 +379,7 @@ function popupHtml(i){
   </table>
   <div class="note">Score por regras: desconto, R$/m² vs. cidade, modalidade, financiamento e tipo. Ocupação, dívidas e matrícula ainda <b>não</b> entram — leia o edital.</div>
   <div class="note">${{exato:'📍 Posição pelo endereço.',rua:'⚠ Posição pela rua: o número não está no mapa, então pode errar algumas quadras.',bairro:'⚠ Posição aproximada (dentro do bairro). Toque em Localizar endereço.',cidade:'⚠ Posição aproximada (centro da cidade). Use Refinar posição.'}[levelOf(i)]||''}</div>
+  ${extrasHtml(i)}
   <div class="row"><a class="btn" href="${esc(i.link)}" target="_blank" rel="noopener">Abrir na Caixa</a>
   <a class="btn" style="background:#2f7d4f" href="${mapsUrl(i,'pano')}" target="_blank" rel="noopener">${exato?'Street View':'Ver no Google Maps'}</a>
   <button onclick="evalEnv('${i.id}')">🏙 Avaliar entorno</button>
