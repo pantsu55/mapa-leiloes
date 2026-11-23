@@ -339,7 +339,7 @@ function extrasHtml(i){
   const lugar = `${title(i.bairro)} ${title(i.cidade)} ${i.uf}`;
   const lk = (t,u) => `<a class="btn2" href="${esc(u)}" target="_blank" rel="noopener">${t}</a>`;
   const sv = pos
-    ? `<details class="sv" data-src="${esc(svSrc(pos))}" ontoggle="svLoad(this)"><summary>🛣 Ver a rua em 360° (Street View)</summary>${l==='rua'?'<div class="note">Posição pela rua: a imagem pode mostrar outro trecho.</div>':''}</details>`
+    ? `<details class="sv" data-src="${esc(svSrc(pos))}" ontoggle="svLoad(this)"><summary>🛣 Ver a rua em 360° (Street View)</summary><div class="note">Mostra a foto mais próxima do ponto do mapa; o número da casa pode não bater. Para conferir pelo número, use o botão “Street View pelo endereço”.</div></details>`
     : `<div class="note">Street View embutido só aparece depois de localizar a rua ou o endereço.</div>`;
   return sv + `<div class="note" style="margin-top:8px">Pesquisar sobre ${esc(title(i.bairro))}:</div><div class="row">`
     + lk('🛡 Segurança', g(`segurança bairro ${lugar}`))
@@ -349,6 +349,7 @@ function extrasHtml(i){
     + `</div>`;
 }
 function mapsUrl(i,kind){
+  if(kind==='addr') return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addrQuery(i,true))}`;   // o Google localiza o número melhor que o OSM
   const pos=cacheQ[addrQuery(i,true)];
   if(pos && kind==='pano') return `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${pos[0]},${pos[1]}`;
   const q = pos ? `${pos[0]},${pos[1]}` : addrQuery(i,true);
@@ -381,7 +382,7 @@ function popupHtml(i){
   <div class="note">${{exato:'📍 Posição pelo endereço.',rua:'⚠ Posição pela rua: o número não está no mapa, então pode errar algumas quadras.',bairro:'⚠ Posição aproximada (dentro do bairro). Toque em Localizar endereço.',cidade:'⚠ Posição aproximada (centro da cidade). Use Refinar posição.'}[levelOf(i)]||''}</div>
   ${extrasHtml(i)}
   <div class="row"><a class="btn" href="${esc(i.link)}" target="_blank" rel="noopener">Abrir na Caixa</a>
-  <a class="btn" style="background:#2f7d4f" href="${mapsUrl(i,'pano')}" target="_blank" rel="noopener">${exato?'Street View':'Ver no Google Maps'}</a>
+  <a class="btn" style="background:#2f7d4f" href="${mapsUrl(i,'addr')}" target="_blank" rel="noopener" title="Busca o endereço no Google, que acerta o número melhor que o OpenStreetMap. Depois toque na foto/Street View.">Street View pelo endereço</a>
   <button onclick="evalEnv('${i.id}')">🏙 Avaliar entorno</button>
   ${exato?'':`<button onclick="refineOne('${i.id}')">📍 Localizar endereço</button>`}
   <button onclick="toggleFav('${i.id}')">${favs.has(i.id)?'★ Favorito':'☆ Favoritar'}</button></div></div>`;
