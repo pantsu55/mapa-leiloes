@@ -43,8 +43,27 @@ def log(msg):
         print(f"::{'error' if msg.startswith('ERRO') else 'warning'}::{msg}", flush=True)  # aparece em "Annotations" sem login
 
 
+def baixar_uf(uf, tentativas=4):
+    """Baixa e interpreta o CSV de um estado; repete se vier vazio e registra o que chegou."""
+    for t in range(1, tentativas + 1):
+        texto = baixar(uf)
+        data, linhas = parse_csv(texto)
+        if linhas:
+            return data, linhas
+        inicio = texto[:200].replace("\r", " ").replace("\n", " ")
+        log(f"aviso: {uf}: CSV sem imóveis (tentativa {t}/{tentativas}, {len(texto)} caracteres): {inicio!r}")
+        if t < tentativas:
+            time.sleep(10 * t)
+    raise RuntimeError(f"{uf}: nenhum imóvel no CSV depois de {tentativas} tentativas")
+
+
 def baixar(uf, tentativas=3):
-    req = urllib.request.Request(URL.format(uf=uf), headers={"User-Agent": "Mozilla/5.0"})
+    req = urllib.request.Request(URL.format(uf=uf), headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+        "Accept": "text/csv,text/plain,*/*",
+        "Accept-Language": "pt-BR,pt;q=0.9",
+        "Referer": "https://venda-imoveis.caixa.gov.br/sistema/download-lista.asp",
+    })
     for t in range(1, tentativas + 1):
         try:
             with urllib.request.urlopen(req, timeout=90) as r:
@@ -231,9 +250,7 @@ def main():
 
     todas, datas, vistos = [], set(), set()
     for uf in UFS:
-        data, linhas = parse_csv(baixar(uf))
-        if not linhas:
-            raise RuntimeError(f"{uf}: nenhum imóvel no CSV")
+        data, linhas = baixar_uf(uf)
         if data:
             datas.add(data)
         for l in linhas:
