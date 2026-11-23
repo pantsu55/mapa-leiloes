@@ -19,6 +19,8 @@ import shutil
 import subprocess
 import sys
 import time
+import unicodedata
+import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -100,18 +102,96 @@ def parse_csv(texto):
     return data, saida
 
 
+MUN_URL = "https://raw.githubusercontent.com/kelvins/municipios-brasileiros/main/csv/municipios.csv"
+COD_UF = {"35": "SP", "41": "PR", "42": "SC", "43": "RS"}
+NOMINATIM = "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=br&q="
+UFN = {"SP": "São Paulo", "PR": "Paraná", "SC": "Santa Catarina", "RS": "Rio Grande do Sul"}
+CIDADES = AQUI / "cidades.json"
+
+
+def norm(s):
+    s = unicodedata.normalize("NFD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r"[^A-Z0-9]+", " ", s.upper()).strip()
+
+
+def coords_municipios():
+    """{(uf, nome normalizado): [lat, lon]} a partir da base de municípios (IBGE)."""
+    req = urllib.request.Request(MUN_URL, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        texto = r.read().decode("utf-8")
+    saida = {}
+    for r in csv.DictReader(io.StringIO(texto)):
+        uf = COD_UF.get(r["codigo_uf"])
+        if uf:
+            saida[(uf, norm(r["nome"]))] = [round(float(r["latitude"]), 4), round(float(r["longitude"]), 4)]
+    return saida
+
+
+def nominatim(uf, cidade):
+    q = f"{cidade.title()}, {UFN[uf]}, Brasil"
+    req = urllib.request.Request(NOMINATIM + urllib.parse.quote(q), headers={"User-Agent": "mapa-leiloes-atualizador"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            j = json.loads(r.read().decode("utf-8"))
+        return [round(float(j[0]["lat"]), 4), round(float(j[0]["lon"]), 4)] if j else None
+    except Exception as e:  # noqa: BLE001
+        log(f"Nominatim falhou para {cidade}/{uf}: {e}")
+        return None
+
+
+def resolver_cidades(linhas):
+    """Garante coordenadas de todas as cidades. Cache em cidades.json (só busca as novas)."""
+    cache = json.loads(CIDADES.read_text(encoding="utf-8")) if CIDADES.exists() else {}
+    chaves = {f"{l[1]}|{l[2]}": (l[1], l[2]) for l in linhas}
+    faltam = [k for k in chaves if k not in cache]
+    if faltam:
+        log(f"{len(faltam)} cidade(s) sem coordenadas, buscando")
+        try:
+            mun = coords_municipios()
+        except Exception as e:  # noqa: BLE001
+            log(f"aviso: base de municípios indisponível: {e}")
+            mun = {}
+        for k in faltam:
+            uf, cid = chaves[k]
+            pos = mun.get((uf, norm(cid)))
+            if not pos:
+                time.sleep(1.1)
+                pos = nominatim(uf, cid)
+            if pos:
+                cache[k] = pos
+            else:
+                log(f"aviso: sem coordenadas para {cid}/{uf} (o mapa tenta localizar no navegador)")
+        CIDADES.write_text(json.dumps(cache, ensure_ascii=False, sort_keys=True, indent=0) + "\n", encoding="utf-8")
+    return {k: cache[k] for k in sorted(chaves) if k in cache}
+
+
 def total_atual(html):
     m = re.search(r"const RAW = (\[.*\]);", html)
     return len(json.loads(m.group(1))) if m else 0
 
 
-def gerar_html(html, linhas, data):
-    ini = html.index("const RAW = ")
+def trocar_linha(html, prefixo, novo, depois_de=None):
+    """Troca a linha que começa com `prefixo`; se não existir, insere após a linha `depois_de`."""
+    ini = html.find(prefixo)
+    if ini < 0:
+        a = html.index(depois_de)
+        fim = html.index("\n", a)
+        quebra = "\r\n" if html[fim - 1] == "\r" else "\n"
+        if quebra == "\r\n":
+            fim -= 1
+        return html[:fim] + quebra + novo + html[fim:]
     fim = html.index("\n", ini)
     if html[fim - 1] == "\r":
         fim -= 1
-    novo = "const RAW = " + json.dumps(linhas, ensure_ascii=False, separators=(",", ":")) + ";"
-    html = html[:ini] + novo + html[fim:]
+    return html[:ini] + novo + html[fim:]
+
+
+def gerar_html(html, linhas, data, cidades):
+    def js(obj):
+        return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+    html = trocar_linha(html, "const RAW = ", "const RAW = " + js(linhas) + ";")
+    html = trocar_linha(html, "const CITY_SEED = ", "const CITY_SEED = " + js(cidades) + ";", depois_de="const RAW = ")
     cab, n = re.subn(
         r"Dados da Caixa de [^·<]*· [\d.]+ imóveis",
         f"Dados da Caixa de {data} · {len(linhas):,} imóveis".replace(",", "."),
@@ -171,7 +251,7 @@ def main():
         log("dry-run: nada alterado")
         return
 
-    novo = gerar_html(html, todas, data)
+    novo = gerar_html(html, todas, data, resolver_cidades(todas))
     if novo == html:
         log("sem mudanças no index.html")
         return
@@ -180,7 +260,7 @@ def main():
 
     if a.no_push:
         return
-    git("add", "index.html")
+    git("add", "index.html", "cidades.json")
     git("commit", "-m", f"Atualiza dados da Caixa ({data}, {len(todas)} imóveis)")
     try:
         git("pull", "--rebase", "--autostash")
