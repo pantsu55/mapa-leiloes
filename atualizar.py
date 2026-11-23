@@ -43,7 +43,7 @@ def log(msg):
         print(f"::{'error' if msg.startswith('ERRO') else 'warning'}::{msg}", flush=True)  # aparece em "Annotations" sem login
 
 
-def baixar_uf(uf, tentativas=4):
+def baixar_uf(uf, tentativas=3):
     """Baixa e interpreta o CSV de um estado; repete se vier vazio e registra o que chegou."""
     for t in range(1, tentativas + 1):
         texto = baixar(uf)
@@ -58,12 +58,7 @@ def baixar_uf(uf, tentativas=4):
 
 
 def baixar(uf, tentativas=3):
-    req = urllib.request.Request(URL.format(uf=uf), headers={
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-        "Accept": "text/csv,text/plain,*/*",
-        "Accept-Language": "pt-BR,pt;q=0.9",
-        "Referer": "https://venda-imoveis.caixa.gov.br/sistema/download-lista.asp",
-    })
+    req = urllib.request.Request(URL.format(uf=uf), headers={"User-Agent": "Mozilla/5.0"})
     for t in range(1, tentativas + 1):
         try:
             with urllib.request.urlopen(req, timeout=90) as r:
