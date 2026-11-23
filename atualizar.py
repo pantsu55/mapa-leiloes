@@ -14,6 +14,7 @@ import argparse
 import csv
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -38,6 +39,8 @@ def log(msg):
     print(linha, flush=True)
     with open(LOG, "a", encoding="utf-8") as f:
         f.write(linha + "\n")
+    if os.environ.get("GITHUB_ACTIONS") and msg.startswith(("ERRO", "aviso")):
+        print(f"::{'error' if msg.startswith('ERRO') else 'warning'}::{msg}", flush=True)  # aparece em "Annotations" sem login
 
 
 def baixar(uf, tentativas=3):
@@ -241,7 +244,8 @@ def main():
     todas.sort(key=lambda l: (l[1], l[2]))  # ordem estável por UF e cidade
 
     data = max(datas, key=lambda d: datetime.strptime(d, "%d/%m/%Y")) if datas else f"{datetime.now():%d/%m/%Y}"
-    html = INDEX.read_text(encoding="utf-8", newline="")
+    with open(INDEX, encoding="utf-8", newline="") as f:  # (Path.read_text(newline=) só existe no Python 3.13+)
+        html = f.read()
     antes = total_atual(html)
     if antes and len(todas) < antes * MIN_FRACAO:
         raise RuntimeError(f"total caiu de {antes} para {len(todas)}; abortando por segurança")
