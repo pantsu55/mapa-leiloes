@@ -151,21 +151,45 @@ function filtered(){
 }
 
 /* ---------- geocodificação (roda no seu navegador, com cache) ---------- */
-const NOM = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=br&accept-language=pt-BR&q=';
+const NOM = 'https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=5&countrycodes=br&accept-language=pt-BR&q=';
 const cacheCity = {...store.get('gc_city',{}), ...CITY_SEED}; // CITY_SEED: coordenadas das cidades embutidas pelo atualizar.py
-const cacheBairro = store.get('gc_bairro',{});
-const cacheQ = store.get('gc_q2',{});
+// gc_bairro2 / gc_q3: caches novos; os antigos (gc_bairro / gc_q2) guardavam resultados sem validação e ficam ignorados
+const cacheBairro = store.get('gc_bairro2',{});
+const cacheQ = store.get('gc_q3',{});   // endereço -> [lat, lon, 1=número encontrado | 0=só a rua] ou null
 const UFN = {SP:'São Paulo',PR:'Paraná',SC:'Santa Catarina',RS:'Rio Grande do Sul'};
 let lastReq = 0;
-async function nominatim(q){
+async function nominatimAll(q){   // lista de resultados, ou undefined se o serviço falhou
   const wait = Math.max(0, lastReq+1100-Date.now()); if(wait) await new Promise(r=>setTimeout(r,wait));
   lastReq = Date.now();
   try{
     const r = await fetch(NOM+encodeURIComponent(q));
     if(!r.ok) return undefined;
-    const j = await r.json();
-    return j.length ? [parseFloat(j[0].lat),parseFloat(j[0].lon)] : null;
+    return await r.json();
   }catch(e){ return undefined; }
+}
+async function nominatim(q){
+  const j = await nominatimAll(q);
+  return j===undefined ? undefined : j.length ? [parseFloat(j[0].lat),parseFloat(j[0].lon)] : null;
+}
+/* validação: o resultado precisa estar perto da cidade, ser do tipo certo e ter o nome da rua */
+const km = (a,b) => Math.hypot((a[0]-b[0])*111,(a[1]-b[1])*111*Math.cos(a[0]*Math.PI/180));
+const MAXKM = 35;
+const BAD = new Set(['city','town','village','municipality','state','county','country','region','state_district','suburb','neighbourhood','quarter','city_district','district','borough','hamlet','postcode','continent']);
+const STOP = new Set(['rua','r','avenida','av','travessa','tv','estrada','est','rodovia','rod','alameda','al','praca','pca','beco','largo','de','da','do','das','dos','e','n','sn']);
+const flat = s => norm(s).replace(/[^a-z0-9]/g,'');
+function pickAddr(list,i,city){
+  const words = streetWords(i), num = numOf(i);
+  for(const r of list){
+    if(BAD.has(r.addresstype)) continue;
+    const pos = [parseFloat(r.lat),parseFloat(r.lon)];
+    const d = city ? km(pos,city) : 0;
+    if(d>MAXKM) continue;
+    const a = r.address||{};
+    if(d>12){ const nm=[a.city,a.town,a.village,a.municipality].filter(Boolean).map(flat); if(nm.length && !nm.includes(flat(i.cidade))) continue; }
+    if(words.length){ const dn=norm(r.display_name||''); if(!words.some(w=>dn.includes(w))) continue; }
+    return [pos[0],pos[1], (num && a.house_number && flat(a.house_number)===flat(num)) ? 1 : 0];
+  }
+  return null;
 }
 const cityKey = i => i.uf+'|'+i.cidade;
 const cities = {};
@@ -186,40 +210,51 @@ async function geocodeCities(){
   }
   if(!stopCity){ $('status').textContent=`Cidades localizadas (${cityDone}/${cityList.length}).`; $('prog').style.display='none'; }
 }
+const streetOf = i => { const m=i.end.match(/^(.*?),\s*N\./i); return (m?m[1]:i.end.split(',')[0]).replace(/\(.*?\)/g,'').trim(); };
+const numOf = i => { const m=i.end.match(/,\s*N\.\s*(\d+)/i); return m?m[1]:''; };   // "S/N" e quadra/lote não têm número
+const streetWords = i => norm(streetOf(i)).split(/[^a-z0-9]+/).filter(w=>w&&!STOP.has(w)&&!/^\d+$/.test(w));
 function addrQuery(i, withBairro){
-  const m = i.end.match(/^(.*?),\s*N\.\s*([^,\s]+)/i);
-  let street = m ? m[1].trim() : i.end.split(',')[0].trim();
-  const num = m && !/^sn$/i.test(m[2]) ? m[2] : '';
-  return [`${title(street)}${num?' '+num:''}`, withBairro?title(i.bairro):null, title(i.cidade), UFN[i.uf], 'Brasil'].filter(Boolean).join(', ');
+  const num = numOf(i);
+  return [`${title(streetOf(i))}${num?' '+num:''}`, withBairro?title(i.bairro):null, title(i.cidade), UFN[i.uf], 'Brasil'].filter(Boolean).join(', ');
 }
 const bairroKey = i => i.uf+'|'+i.cidade+'|'+i.bairro;
 async function geocodeExact(i){
   const k = addrQuery(i,true);
   if(k in cacheQ) return cacheQ[k];
-  let pos = await nominatim(k);
-  if(pos===null) pos = await nominatim(addrQuery(i,false));
-  if(pos===undefined) return undefined;
-  cacheQ[k] = pos; store.set('gc_q2',cacheQ);
-  return pos;
+  const city = cacheCity[cityKey(i)];
+  let best = null;
+  for(const q of [k, addrQuery(i,false)]){
+    const j = await nominatimAll(q);
+    if(j===undefined) return undefined;
+    const c = pickAddr(j,i,city);
+    if(c && (!best || c[2]>best[2])) best = c;
+    if(best && best[2]===1) break;   // achou o número: não precisa da segunda busca
+  }
+  cacheQ[k] = best; store.set('gc_q3',cacheQ);
+  return best;
 }
 async function geocodeBairro(i){
   const k = bairroKey(i);
   if(k in cacheBairro) return cacheBairro[k];
-  const pos = await nominatim(`${title(i.bairro)}, ${title(i.cidade)}, ${UFN[i.uf]}, Brasil`);
-  if(pos===undefined) return undefined;
-  cacheBairro[k] = pos; store.set('gc_bairro',cacheBairro);
+  const j = await nominatimAll(`${title(i.bairro)}, ${title(i.cidade)}, ${UFN[i.uf]}, Brasil`);
+  if(j===undefined) return undefined;
+  const city = cacheCity[cityKey(i)];
+  const ok = j.find(r=>!['state','country','county','region','state_district'].includes(r.addresstype) && (!city || km([parseFloat(r.lat),parseFloat(r.lon)],city)<=MAXKM));
+  const pos = ok ? [parseFloat(ok.lat),parseFloat(ok.lon)] : null;
+  cacheBairro[k] = pos; store.set('gc_bairro2',cacheBairro);
   return pos;
 }
 const jit = (id,s) => { let h=0; for(const c of id) h=(h*31+c.charCodeAt(0))>>>0; return [((h%1000)/1000-.5)*s, (((h>>>10)%1000)/1000-.5)*s]; };
 function levelOf(i){
-  if(cacheQ[addrQuery(i,true)]) return 'exato';
+  const q = cacheQ[addrQuery(i,true)];
+  if(q) return q[2]===1 ? 'exato' : 'rua';
   if(cacheBairro[bairroKey(i)]) return 'bairro';
   if(cacheCity[cityKey(i)]) return 'cidade';
   return null;
 }
 function coordOf(i){
   const l = levelOf(i); if(!l) return null;
-  if(l==='exato') return cacheQ[addrQuery(i,true)];
+  if(l==='exato'||l==='rua') return cacheQ[addrQuery(i,true)].slice(0,2);
   const base = l==='bairro' ? cacheBairro[bairroKey(i)] : cacheCity[cityKey(i)];
   const [a,b] = jit(i.id, l==='bairro' ? 0.006 : 0.03);
   return [base[0]+a, base[1]+b];
@@ -313,7 +348,7 @@ function popupHtml(i){
    <tr><td>Atenção</td><td>${atencaoHtml(i)}</td></tr>
   </table>
   <div class="note">Score por regras: desconto, R$/m² vs. cidade, modalidade, financiamento e tipo. Ocupação, dívidas e matrícula ainda <b>não</b> entram — leia o edital.</div>
-  <div class="note">${{exato:'📍 Posição pelo endereço.',bairro:'⚠ Posição aproximada (dentro do bairro). Toque em Localizar endereço.',cidade:'⚠ Posição aproximada (centro da cidade). Use Refinar posição.'}[levelOf(i)]||''}</div>
+  <div class="note">${{exato:'📍 Posição pelo endereço.',rua:'⚠ Posição pela rua: o número não está no mapa, então pode errar algumas quadras.',bairro:'⚠ Posição aproximada (dentro do bairro). Toque em Localizar endereço.',cidade:'⚠ Posição aproximada (centro da cidade). Use Refinar posição.'}[levelOf(i)]||''}</div>
   <div class="row"><a class="btn" href="${esc(i.link)}" target="_blank" rel="noopener">Abrir na Caixa</a>
   <a class="btn" style="background:#2f7d4f" href="${mapsUrl(i,'pano')}" target="_blank" rel="noopener">${exato?'Street View':'Ver no Google Maps'}</a>
   <button onclick="evalEnv('${i.id}')">🏙 Avaliar entorno</button>
